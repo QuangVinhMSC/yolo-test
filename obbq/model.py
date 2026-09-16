@@ -19,6 +19,7 @@ from ultralytics.nn import tasks
 from ultralytics.nn.tasks import OBBModel
 from ultralytics.utils import DEFAULT_CFG, LOGGER, RANK, ops
 from ultralytics.utils.loss import E2ELoss
+from ultralytics.utils.metrics import batch_probiou
 from ultralytics.utils.torch_utils import unwrap_model
 
 from .data import build_quality_dataset, strip_quality
@@ -155,7 +156,7 @@ class OBBQualityValidator(OBBValidator):
         """Match predictions to ground truth and accumulate the quality of every matched pair."""
         out = super()._process_batch(preds, batch)
         if batch["cls"].shape[0] and preds["cls"].shape[0] and "quality" in preds and "quality" in batch:
-            iou = ops.batch_probiou(batch["bboxes"], preds["bboxes"])
+            iou = batch_probiou(batch["bboxes"], preds["bboxes"])
             best = iou.argmax(dim=1)  # best prediction per ground-truth object
             keep = (iou.gather(1, best[:, None]).squeeze(1) > 0.5) & (preds["cls"][best] == batch["cls"])
             if keep.any():

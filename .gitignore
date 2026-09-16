@@ -4,3 +4,4 @@ datasets/
 runs/
 *.pt
 *.onnx
+.pytest_cache/
