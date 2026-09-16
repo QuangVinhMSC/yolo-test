@@ -10,6 +10,21 @@ more branch of the existing detection head, reading the same P3/P4/P5 features
 and flowing through the same decode, top-k, export and NMS path as the box and
 the class scores.
 
+> [!IMPORTANT]
+> **Two gotchas before you train.**
+>
+> 1. **Keep `nms=False`** — the YOLO26 default. The legacy NMS path reads the
+>    angle as the *last* column of a prediction row (`x[:, -1:]` in
+>    `ultralytics/utils/nms.py`), and the appended quality column would break
+>    that. The end-to-end conf filter is column-agnostic, so it is unaffected.
+> 2. **Installing `albumentations` needs one more patch.** Its ultralytics
+>    wrapper does `labels["cls"] = cls[i].reshape(-1, 1)`, which would flatten
+>    the packed `(n, 2)` `cls` array that carries quality. It is not installed
+>    here; with it installed, that line needs the same treatment as the two
+>    seams described under [Carrying quality through augmentation](#3-carrying-quality-through-augmentation).
+>
+> Both are expanded in [Notes and limits](#notes-and-limits).
+
 ## What was added
 
 | Piece | File | What it does |
@@ -207,7 +222,9 @@ term is minimized where the prediction equals the annotation.
 * **Albumentations.** If `albumentations` is installed, ultralytics' wrapper
   reshapes `cls` with `cls[i].reshape(-1, 1)`, which would flatten the packed
   `(n, 2)` array. It is not installed here; with it installed, that one line
-  needs the same treatment as the two seams above.
+  needs the same treatment as the two seams above. Patch it in
+  `Albumentations.__call__` by preserving the trailing columns, i.e.
+  `cls[i].reshape(-1, cls.shape[-1])`.
 * **`nq`.** The head takes the number of quality channels as its third YAML
   argument, so `[nc, 1, 3]` would predict three per-object attributes instead of
   one. Only `nq = 1` is wired through the loss and the label parser.
