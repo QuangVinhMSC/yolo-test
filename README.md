@@ -263,7 +263,7 @@ and `results.csv` gains `metrics/quality_mae` and `metrics/quality_corr`.
 `obbq.model_cfg(scale, variant)` accepts scales `n`, `s`, `m`, `l`, `x` and
 variants `quality`, `defect`.
 
-## Trial result
+## Trial result: quality
 
 100 epochs on the synthetic set from `tools/make_dataset.py` (240 train / 48 val
 images, 2 classes, `yolo26n` scale, imgsz 320, CPU, ~30 min), where an object's
@@ -290,6 +290,60 @@ val_0002.jpg: 6 detection(s)
   box=( 178.3, 151.1,  29.0, 120.6,+0.43rad)  class=bar   conf=0.948  quality=0.533
   box=( 121.1, 150.0,  34.5, 117.4,+0.66rad)  class=bar   conf=0.887  quality=0.124
 ```
+
+## Trial result: defect class
+
+100 epochs on the synthetic set from `tools/make_defect_dataset.py` (400 train /
+80 val images, 2 object classes x 4 defect classes, `yolo26n` scale, imgsz 320,
+CPU, ~35 min):
+
+```
+               Class     Images  Instances      Box(P          R      mAP50  mAP50-95)
+                 all         71        135      0.951      0.989      0.990      0.981
+                rect         47         60      1.000      0.987      0.995      0.989
+                 bar         56         75      0.903      0.991      0.985      0.973
+defect: accuracy 1.0000, macro F1 1.0000, over 131 matched object(s)
+    ok           n=34    correct=1.0000
+    scratch      n=25    correct=1.0000
+    hole         n=34    correct=1.0000
+    crack        n=38    correct=1.0000
+```
+
+`tools/eval_defect.py`, which re-scores the same weights straight from the label
+files without touching the validator, agrees -- 156/156 matched objects correct,
+a perfectly diagonal confusion matrix:
+
+```
+confusion matrix (rows = annotated, cols = predicted)
+                    ok   scratch      hole     crack
+          ok        44         0         0         0
+     scratch         0        28         0         0
+        hole         0         0        40         0
+       crack         0         0         0        44
+```
+
+Inference returns the defect alongside the box and the object class:
+
+```
+val_0001.jpg: 3 detection(s)
+  box=( 198.6, 188.7,  68.4,  82.2,+0.17rad)  class=rect  conf=0.964  defect=scratch  p=1.000
+  box=( 240.8,  52.7,  86.4,  68.1,+0.31rad)  class=rect  conf=0.955  defect=ok       p=0.996
+  box=( 279.3, 144.5,  74.9,  72.6,+0.05rad)  class=rect  conf=0.921  defect=hole     p=1.000
+```
+
+> [!NOTE]
+> **This benchmark is saturated, and 1.0 should be read accordingly.** The
+> synthetic defects are unambiguous -- a white line, a black disc, a jagged black
+> line, or nothing, on a uniform fill with no occlusion -- and the four classes
+> are balanced. The result establishes that the mechanism carries a second
+> classifier end to end, through assignment, augmentation, decode and export. It
+> says nothing about how the branch behaves under realistic difficulty: subtle
+> defects, heavy class imbalance, or genuinely ambiguous boundaries. For a number
+> that discriminates between designs, regenerate with low-contrast marks and
+> skewed class frequencies.
+>
+> That the accuracy *climbed* (0.951 at epoch 10, 0.990 at 15, 1.0 by 25) rather
+> than starting pinned is what rules out a degenerate metric.
 
 ## Tests
 
@@ -321,5 +375,10 @@ term is minimized where the prediction equals the annotation.
 * **`nq`.** The head takes the number of quality channels as its third YAML
   argument, so `[nc, 1, 3]` would predict three per-object attributes instead of
   one. Only `nq = 1` is wired through the loss and the label parser.
+* **Defect scores are already probabilities.** The head's `_inference` squashes
+  the defect logits with `sigmoid`, matching the independent one-hot BCE the
+  branch is trained with. Do not apply a softmax on top: it flattens a confident
+  `[1, 0, 0, 0]` to 0.475 and reports a certain, correct call as near-chance.
+  `argmax` is unaffected, so this shows up as bad confidences with good accuracy.
 * **Label cache.** `QualityOBBDataset` tags its cache hash, so a plain-OBB
   `labels.cache` is never silently reused for quality-aware labels.

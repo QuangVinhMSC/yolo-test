@@ -101,11 +101,15 @@ class OBBDefectPredictor(OBBExtraPredictor):
     """Predictor attaching `defect` (class index) and `defect_conf` to each result."""
 
     def attach_extra(self, result, extra: torch.Tensor):
-        """Attach the defect class and its score for each detection."""
-        scores = extra.softmax(dim=-1) if extra.shape[1] else extra
+        """Attach the defect class and its score for each detection.
+
+        `extra` already holds per-class probabilities: the head's `_inference` squashes the branch's logits with
+        `sigmoid`, matching the independent one-hot BCE the branch is trained with. Do not re-normalize them --
+        a softmax on top would flatten a confident `[1, 0, 0, 0]` to 0.475 and report it as near-chance.
+        """
         result.defect_scores = extra
-        result.defect = scores.argmax(dim=-1) if extra.shape[1] else torch.zeros(extra.shape[0], dtype=torch.long)
-        result.defect_conf = scores.max(dim=-1).values if extra.shape[1] else torch.zeros(extra.shape[0])
+        result.defect = extra.argmax(dim=-1) if extra.shape[1] else torch.zeros(extra.shape[0], dtype=torch.long)
+        result.defect_conf = extra.max(dim=-1).values if extra.shape[1] else torch.zeros(extra.shape[0])
         result.defect_names = self.model_defect_names()
         return result
 

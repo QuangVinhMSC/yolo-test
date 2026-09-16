@@ -149,3 +149,28 @@ def test_defect_loss_ignores_background_anchors():
     logits[:, 1:, :] = 9.0
     loss_b = criterion.calculate_extra_loss(logits, gt_defect, target_gt_idx, only_first, weight, scores_sum)
     assert torch.allclose(loss_a, loss_b)
+
+
+def test_defect_conf_is_not_renormalized():
+    """The predictor reports the branch's own probability, not a softmax of it.
+
+    `_inference` already sigmoids the defect channels, so re-normalizing would squash a confident one-hot
+    prediction to 0.475 and report near-chance confidence for a correct, certain call.
+    """
+    from obbq.defect import OBBDefectPredictor
+
+    class _Predictor(OBBDefectPredictor):
+        def __init__(self):
+            pass  # no backend needed: attach_extra only reads the tensor and the names
+
+        def model_defect_names(self):
+            return {0: "ok", 1: "scratch", 2: "hole", 3: "crack"}
+
+    result = type("R", (), {})()
+    scores = torch.tensor([[0.99, 0.01, 0.02, 0.01], [0.30, 0.28, 0.26, 0.25]])
+    _Predictor().attach_extra(result, scores)
+
+    assert result.defect.tolist() == [0, 0]
+    assert result.defect_conf[0] == pytest.approx(0.99)  # confident stays confident
+    assert result.defect_conf[1] == pytest.approx(0.30)  # unsure stays unsure
+    assert result.defect_conf[0] > 0.9, "a softmax here would collapse this to ~0.475"
