@@ -155,6 +155,44 @@ and `results.csv` gains `metrics/quality_mae` and `metrics/quality_corr`.
 
 `obbq.model_cfg(scale)` accepts `n`, `s`, `m`, `l`, `x`.
 
+## Trial result
+
+100 epochs on the synthetic set from `tools/make_dataset.py` (240 train / 48 val
+images, 2 classes, `yolo26n` scale, imgsz 320, CPU, ~30 min), where an object's
+annotated quality is its contrast against the background:
+
+```
+               Class     Images  Instances      Box(P          R      mAP50  mAP50-95)
+                 all         48        115      0.929      0.869      0.937      0.775
+                rect         38         55      0.932      0.909      0.951      0.860
+                 bar         33         60      0.926      0.830      0.922      0.690
+quality: MAE 0.0767, corr 0.8812, over 101 matched object(s)
+```
+
+The third output tracks its label: mean absolute error 0.077 on a 0-1 scale and
+a correlation of 0.88 against the annotated quality of matched objects, while
+box and class accuracy train normally alongside it. `qual_loss` falls
+monotonically with the other four terms (see `runs/obb/trial/results.csv`).
+
+Inference returns all three per detection:
+
+```
+val_0002.jpg: 6 detection(s)
+  box=( 241.0,  42.6,  33.9,  42.2,-0.28rad)  class=rect  conf=0.954  quality=0.780
+  box=( 178.3, 151.1,  29.0, 120.6,+0.43rad)  class=bar   conf=0.948  quality=0.533
+  box=( 121.1, 150.0,  34.5, 117.4,+0.66rad)  class=bar   conf=0.887  quality=0.124
+```
+
+## Tests
+
+```bash
+python -m pytest tests/test_quality.py -v
+```
+
+Covers label parsing (10-column, 9-column default, out-of-range rejection), the
+head's output layout and YAML arity check, the `cls` split, and that the quality
+term is minimized where the prediction equals the annotation.
+
 ## Notes and limits
 
 * **Scope.** Built and tested against ultralytics 8.4.153, YOLO26 OBB in its
