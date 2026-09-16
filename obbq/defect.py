@@ -106,8 +106,16 @@ class OBBDefectPredictor(OBBExtraPredictor):
         result.defect_scores = extra
         result.defect = scores.argmax(dim=-1) if extra.shape[1] else torch.zeros(extra.shape[0], dtype=torch.long)
         result.defect_conf = scores.max(dim=-1).values if extra.shape[1] else torch.zeros(extra.shape[0])
-        result.defect_names = getattr(self.model, "defect_names", None) or {}
+        result.defect_names = self.model_defect_names()
         return result
+
+    def model_defect_names(self) -> dict:
+        """Find the defect class names, which ride on the checkpoint's model rather than on AutoBackend."""
+        for obj in (self.model, getattr(self.model, "model", None)):
+            names = getattr(obj, "defect_names", None)
+            if names:
+                return names if isinstance(names, dict) else dict(enumerate(names))
+        return {}
 
 
 class OBBDefectTrainer(OBBExtraTrainer):

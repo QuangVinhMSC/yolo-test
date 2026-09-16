@@ -1,8 +1,19 @@
-# YOLO26 OBB with a third output: boxes, classes, quality
+# YOLO26 OBB with a third output: boxes, classes, and one more thing
 
 Stock YOLO26 OBB supervises two things you annotate: the oriented **box** and the
-**class**. This repo adds a third, **quality** — one scalar per object, predicted
-per anchor, trained from the labels, and returned next to every detection.
+**class**. This repo adds a third per-object output, predicted per anchor,
+trained from the labels, and returned next to every detection.
+
+Two variants ship, differing only in what the third output *is*:
+
+| Variant | Third output | Branch shaped like | Loss |
+|---|---|---|---|
+| `quality` | one scalar in [0, 1] | the head's **angle** branch (`cv4`) | soft-target BCE |
+| `defect` | one class out of `nd` | the head's **class** branch (`cv3`) | one-hot BCE |
+
+The `defect` variant is the answer to "can the third output be another
+classifier?" — yes, and it is the more natural of the two, because the head
+already contains exactly the branch it needs.
 
 The third output is built the same way the head builds the outputs it already
 has. No new architecture block, no second network, no extra backbone: it is one
@@ -21,7 +32,7 @@ the class scores.
 >    wrapper does `labels["cls"] = cls[i].reshape(-1, 1)`, which would flatten
 >    the packed `(n, 2)` `cls` array that carries quality. It is not installed
 >    here; with it installed, that line needs the same treatment as the two
->    seams described under [Carrying quality through augmentation](#3-carrying-quality-through-augmentation).
+>    seams described under [Carrying the extra label through augmentation](#3-carrying-the-extra-label-through-augmentation).
 >
 > Both are expanded in [Notes and limits](#notes-and-limits).
 
@@ -29,11 +40,12 @@ the class scores.
 
 | Piece | File | What it does |
 |---|---|---|
-| Head | `obbq/head.py` | `OBB26Quality` — adds a `cv5` branch to `OBB26` |
-| Loss | `obbq/loss.py` | `OBBQualityLoss` — adds a 5th term, `qual_loss` |
-| Data | `obbq/data.py` | Quality-aware label parsing and dataset |
-| Wiring | `obbq/model.py` | Model, trainer, validator, predictor |
-| Config | `obbq/cfg/yolo26-obb-quality.yaml` | Stock `yolo26-obb.yaml` with head args `[nc, 1, 1]` |
+| Head | `obbq/head.py` | `OBB26ExtraBranch` adds a `cv5` branch to `OBB26`; `OBB26Quality` / `OBB26Defect` shape it |
+| Loss | `obbq/loss.py` | `OBBExtraLoss` adds a 5th term; `OBBQualityLoss` / `OBBDefectLoss` supply it |
+| Data | `obbq/data.py` | Extra-column label parsing and dataset, per-variant validation |
+| Wiring | `obbq/model.py` | Shared model, trainer, validator, predictor bases |
+| Defect variant | `obbq/defect.py` | The defect classifier's model, trainer, validator, predictor |
+| Config | `obbq/cfg/yolo26-obb-{quality,defect}.yaml` | Stock `yolo26-obb.yaml` with three head args |
 
 ### 1. The head branch
 
@@ -93,7 +105,7 @@ an existing OBB dataset trains without being touched.
 Migrate an existing dataset with `tools/add_quality_column.py`, or generate a
 synthetic one with `tools/make_dataset.py`.
 
-### 3. Carrying quality through augmentation
+### 3. Carrying the extra label through augmentation
 
 Quality is stored as a **second column of `cls`**, so `cls` is `(n, 2)`:
 `[class_index, quality]`.
@@ -134,6 +146,61 @@ optimum of `BCE(sigmoid(z), q)` is `sigmoid(z) = q`).
 
 Reported losses become `box_loss cls_loss l1_loss angle_loss qual_loss`.
 
+### 5. The defect variant
+
+The same `cv5` slot, shaped like the head's **classification** branch instead of
+its angle branch:
+
+```python
+nn.Sequential(
+    nn.Sequential(DWConv(c_in, c_in, 3), Conv(c_in, c5, 1)),
+    nn.Sequential(DWConv(c5, c5, 3), Conv(c5, c5, 1)),
+    nn.Conv2d(c5, nd, 1),   # nd defect classes, where cv3 has nc object classes
+)
+```
+
+That is `Detect`'s own class branch, copied, with a different output width. A
+test asserts the two stay structurally identical so the copy cannot drift.
+
+**Label format** — the trailing value is an integer class index instead of a
+scalar:
+
+```
+cls x1 y1 x2 y2 x3 y3 x4 y4 defect_class
+```
+
+and the dataset YAML names the defect classes, which also fixes the branch's
+output width:
+
+```yaml
+names:
+  0: rect
+  1: bar
+defect_names:      # nd = 4; overrides the placeholder in the model YAML
+  0: ok
+  1: scratch
+  2: hole
+  3: crack
+```
+
+The defect class is **independent of the object class** — a `rect` and a `bar`
+can each carry any defect. Two details differ from the quality variant because
+this one is a classifier:
+
+* **Loss.** One-hot BCE over the defect classes, restricted to assigned
+  positives — the same loss the stock class term uses. An anchor only has a
+  defect class when it has an object, so background anchors contribute nothing
+  (there is a test for that).
+* **Bias init.** The stock class branch is initialized for a rare-object prior,
+  because most anchors are background. The defect branch is only ever supervised
+  on positives, where exactly one of its classes is correct, so `bias_init`
+  starts it at a uniform `1/nd` instead. Inheriting the rare-object prior would
+  start it badly miscalibrated.
+
+Validation reports `defect_acc` and `defect_f1` (macro F1) with a per-class
+breakdown; `tools/eval_defect.py` re-scores the same thing straight from the
+label files, sharing no code with the validator, as a check on its numbers.
+
 ## Usage
 
 ```bash
@@ -150,12 +217,22 @@ python predict_quality.py --weights runs/obb/trial/weights/best.pt \
     --source datasets/obb-quality/images/val
 ```
 
+For the defect variant:
+
+```bash
+python tools/make_defect_dataset.py --root datasets/obb-defect --train 400 --val 80
+python train_defect.py --data datasets/obb-defect/data.yaml --epochs 100 --imgsz 320
+python predict_defect.py --weights runs/obb/defect/weights/best.pt \
+    --source datasets/obb-defect/images/val
+python tools/eval_defect.py --weights runs/obb/defect/weights/best.pt   # independent check
+```
+
 From Python:
 
 ```python
 import obbq
 
-obbq.register()                          # enables the `quality` loss gain
+obbq.register()                          # enables the `quality` and `defect` loss gains
 model = obbq.YOLOQuality(obbq.model_cfg("n"))
 model.train(data="datasets/obb-quality/data.yaml", epochs=80, imgsz=320, quality=1.0)
 
@@ -165,10 +242,26 @@ result.obb.cls          # output 2: classes
 result.quality          # output 3: quality, one value per detection
 ```
 
+```python
+from obbq.defect import YOLODefect
+
+obbq.register()
+model = YOLODefect(obbq.model_cfg("n", "defect"))
+model.train(data="datasets/obb-defect/data.yaml", epochs=100, imgsz=320, defect=1.0)
+
+result = model.predict("image.jpg")[0]
+result.obb.xywhr        # output 1: oriented boxes
+result.obb.cls          # output 2: classes
+result.defect           # output 3: defect class index, one per detection
+result.defect_conf      #           its softmax score
+result.defect_scores    #           the raw per-class logits
+```
+
 Validation prints the stock box/class metrics plus `quality: MAE …, corr …`,
 and `results.csv` gains `metrics/quality_mae` and `metrics/quality_corr`.
 
-`obbq.model_cfg(scale)` accepts `n`, `s`, `m`, `l`, `x`.
+`obbq.model_cfg(scale, variant)` accepts scales `n`, `s`, `m`, `l`, `x` and
+variants `quality`, `defect`.
 
 ## Trial result
 
