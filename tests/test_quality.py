@@ -10,7 +10,7 @@ import pytest
 import torch
 
 import obbq
-from obbq.data import QUALITY_COLUMNS, verify_image_label_quality
+from obbq.data import check_quality, verify_image_label_extra
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -32,8 +32,8 @@ def test_label_parsing_reads_quality(tmp_path):
     """A 10-column line yields the polygon plus its quality."""
     row = "1 0.10 0.10 0.30 0.10 0.30 0.20 0.10 0.20 0.375"
     im, lb = _write_sample(tmp_path, [row])
-    _, box, _, segments, quality, nm, nf, ne, nc, msg = verify_image_label_quality(
-        (im, lb, "", False, 2, 0, 0, False)
+    _, box, _, segments, quality, nm, nf, ne, nc, msg = verify_image_label_extra(
+        (im, lb, "", False, 2, 0, 0, False, check_quality)
     )
     assert (nm, nf, ne, nc) == (0, 1, 0, 0), msg
     assert box[0, 0] == 1
@@ -46,7 +46,7 @@ def test_label_parsing_defaults_plain_obb_to_one(tmp_path):
     """A 9-column (plain OBB) line still loads, with quality 1.0."""
     row = "0 0.10 0.10 0.30 0.10 0.30 0.20 0.10 0.20"
     im, lb = _write_sample(tmp_path, [row])
-    *_, quality, _, nf, _, nc, msg = verify_image_label_quality((im, lb, "", False, 2, 0, 0, False))
+    *_, quality, _, nf, _, nc, msg = verify_image_label_extra((im, lb, "", False, 2, 0, 0, False, check_quality))
     assert (nf, nc) == (1, 0), msg
     assert quality[0, 0] == pytest.approx(1.0)
 
@@ -55,7 +55,7 @@ def test_label_parsing_rejects_out_of_range_quality(tmp_path):
     """Quality outside [0, 1] marks the pair corrupt instead of training on it."""
     row = "0 0.10 0.10 0.30 0.10 0.30 0.20 0.10 0.20 1.90"
     im, lb = _write_sample(tmp_path, [row])
-    result = verify_image_label_quality((im, lb, "", False, 2, 0, 0, False))
+    result = verify_image_label_extra((im, lb, "", False, 2, 0, 0, False, check_quality))
     assert result[8] == 1  # nc, corrupt
     assert "quality must be in [0, 1]" in result[9]
 
@@ -63,7 +63,7 @@ def test_label_parsing_rejects_out_of_range_quality(tmp_path):
 def test_head_output_layout():
     """Quality is the last channel, after box, classes and angle."""
     nc = 3
-    head = obbq.OBB26Quality(nc=nc, ne=1, nq=1, reg_max=1, end2end=True, ch=(32, 64, 128))
+    head = obbq.OBB26Quality(nc=nc, ne=1, n_extra=1, reg_max=1, end2end=True, ch=(32, 64, 128))
     head.stride = torch.tensor([8.0, 16.0, 32.0])
     head.eval()
     x = [torch.randn(1, 32, 16, 16), torch.randn(1, 64, 8, 8), torch.randn(1, 128, 4, 4)]

@@ -37,13 +37,37 @@ QUALITY_COLUMNS = 10  # cls + 4 corner points + quality
 DEFAULT_QUALITY = 1.0
 
 
-def verify_image_label_quality(args: tuple) -> list:
-    """Verify one image-label pair in the quality-aware OBB format.
+def check_quality(values: np.ndarray) -> np.ndarray:
+    """Validate a quality column: a scalar in [0, 1]."""
+    assert values.min() >= -0.01 and values.max() <= 1.01, (
+        f"quality must be in [0, 1], got {values.min():.4g} to {values.max():.4g}"
+    )
+    return values.clip(0.0, 1.0)
 
-    Mirrors `ultralytics.data.utils.verify_image_label` for oriented boxes, with the trailing quality value split off
-    before the polygon is parsed. Quality is returned in place of the keypoints slot of the stock result tuple.
+
+def make_check_defect(nd: int):
+    """Return a validator for a defect-class column: an integer index in [0, nd)."""
+
+    def check_defect(values: np.ndarray) -> np.ndarray:
+        assert np.allclose(values, np.round(values)), (
+            f"defect class must be an integer index, got non-integer values {values[values != np.round(values)]}"
+        )
+        assert values.min() >= -0.01 and values.max() < nd, (
+            f"defect class must be in 0-{nd - 1}, got {values.min():.4g} to {values.max():.4g}"
+        )
+        return np.round(values)
+
+    return check_defect
+
+
+def verify_image_label_extra(args: tuple) -> list:
+    """Verify one image-label pair in an extra-column OBB format.
+
+    Mirrors `ultralytics.data.utils.verify_image_label` for oriented boxes, with the trailing extra value split off
+    before the polygon is parsed and handed to `check_extra` for validation. It is returned in place of the keypoints
+    slot of the stock result tuple.
     """
-    im_file, lb_file, prefix, _keypoint, num_cls, _nkpt, _ndim, single_cls = args
+    im_file, lb_file, prefix, _keypoint, num_cls, _nkpt, _ndim, single_cls, check_extra = args
     # Number (missing, found, empty, corrupt), message, segments, quality
     nm, nf, ne, nc, msg, segments, quality = 0, 0, 0, 0, "", [], None
     try:
@@ -74,10 +98,7 @@ def verify_image_label_quality(args: tuple) -> list:
                 # Coordinate points check with 1% tolerance
                 assert points.max() <= 1.01, f"non-normalized or out of bounds coordinates {points[points > 1.01]}"
                 assert points.min() >= -0.01, f"negative coordinate {points[points < -0.01]}"
-                assert quality.min() >= -0.01 and quality.max() <= 1.01, (
-                    f"quality must be in [0, 1], got {quality.min():.4g} to {quality.max():.4g}"
-                )
-                quality = quality.clip(0.0, 1.0)
+                quality = check_extra(quality)
 
                 max_cls = 0 if single_cls else lb[:, 0].max()
                 assert max_cls < num_cls, (
@@ -122,25 +143,27 @@ class QualityFormat(Format):
         return labels
 
 
-class QualityOBBDataset(YOLODataset):
-    """YOLO OBB dataset whose labels carry a per-object quality value.
+class ExtraOBBDataset(YOLODataset):
+    """YOLO OBB dataset whose labels carry one extra per-object value.
 
-    `cls` is (n, 2): column 0 is the class index, column 1 is the quality. Everything else behaves like the stock
-    OBB dataset.
-
-    Examples:
-        >>> dataset = QualityOBBDataset(img_path="images/train", data={"names": {0: "rect"}}, task="obb")
+    `cls` is (n, 2): column 0 is the class index, column 1 is the extra label. Everything else behaves like the
+    stock OBB dataset. Subclasses set `cache_tag` and supply `check_extra`.
     """
 
     format_class = QualityFormat
+    cache_tag: str = "extra"
+
+    def check_extra(self, values: np.ndarray) -> np.ndarray:
+        """Validate the extra column of one label file."""
+        raise NotImplementedError
 
     def get_cache_hash(self) -> str:
-        """Tag the cache so a plain-OBB label cache is never reused for quality-aware labels, or vice versa."""
-        return f"{super().get_cache_hash()}-quality"
+        """Tag the cache so a label cache is never reused across differing label formats."""
+        return f"{super().get_cache_hash()}-{self.cache_tag}"
 
     def verify_args(self) -> tuple:
-        """Return the quality-aware verification function and its argument iterable."""
-        return verify_image_label_quality, zip(
+        """Return the extra-column verification function and its argument iterable."""
+        return verify_image_label_extra, zip(
             self.im_files,
             self.label_files,
             repeat(self.prefix),
@@ -149,6 +172,7 @@ class QualityOBBDataset(YOLODataset):
             repeat(0),
             repeat(0),
             repeat(self.single_cls),
+            repeat(self.check_extra),
         )
 
     def result_to_label(self, result: list) -> tuple[dict | None, int, int, int, int, str]:
@@ -171,7 +195,39 @@ class QualityOBBDataset(YOLODataset):
         return label, nm_f, nf_f, ne_f, nc_f, msg
 
 
-def build_quality_dataset(
+class QualityOBBDataset(ExtraOBBDataset):
+    """OBB dataset whose extra column is a per-object quality score in [0, 1].
+
+    Examples:
+        >>> dataset = QualityOBBDataset(img_path="images/train", data={"names": {0: "rect"}}, task="obb")
+    """
+
+    cache_tag = "quality"
+
+    def check_extra(self, values: np.ndarray) -> np.ndarray:
+        """Validate the quality column."""
+        return check_quality(values)
+
+
+class DefectOBBDataset(ExtraOBBDataset):
+    """OBB dataset whose extra column is a per-object defect class index.
+
+    The number of defect classes comes from `defect_names` in the dataset YAML.
+
+    Examples:
+        >>> data = {"names": {0: "rect"}, "defect_names": {0: "ok", 1: "scratch"}}
+        >>> dataset = DefectOBBDataset(img_path="images/train", data=data, task="obb")
+    """
+
+    cache_tag = "defect"
+
+    def check_extra(self, values: np.ndarray) -> np.ndarray:
+        """Validate the defect-class column against the dataset's defect classes."""
+        return make_check_defect(len(self.data["defect_names"]))(values)
+
+
+def build_extra_dataset(
+    dataset_class: type[ExtraOBBDataset],
     cfg,
     img_path: str,
     batch: int,
@@ -180,14 +236,14 @@ def build_quality_dataset(
     rect: bool = False,
     stride: int = 32,
     fraction: float | None = None,
-) -> QualityOBBDataset:
-    """Build a `QualityOBBDataset`, mirroring `ultralytics.data.build.build_yolo_dataset`."""
+) -> ExtraOBBDataset:
+    """Build an `ExtraOBBDataset`, mirroring `ultralytics.data.build.build_yolo_dataset`."""
     pad = 0.0 if mode == "train" else 0.5
     if data.get("complete"):
         fraction = 1.0
     elif fraction is None:
         fraction = get_split_fraction(cfg.fraction, mode)
-    return QualityOBBDataset(
+    return dataset_class(
         img_path=img_path,
         imgsz=cfg.imgsz,
         batch_size=batch,
@@ -204,6 +260,16 @@ def build_quality_dataset(
         data=data,
         fraction=fraction,
     )
+
+
+def build_quality_dataset(cfg, img_path, batch, data, **kwargs) -> QualityOBBDataset:
+    """Build a `QualityOBBDataset`."""
+    return build_extra_dataset(QualityOBBDataset, cfg, img_path, batch, data, **kwargs)
+
+
+def build_defect_dataset(cfg, img_path, batch, data, **kwargs) -> DefectOBBDataset:
+    """Build a `DefectOBBDataset`."""
+    return build_extra_dataset(DefectOBBDataset, cfg, img_path, batch, data, **kwargs)
 
 
 def strip_quality(batch: dict) -> dict:

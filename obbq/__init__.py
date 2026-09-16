@@ -9,9 +9,22 @@ Usage:
 
 from __future__ import annotations
 
-from .data import QualityOBBDataset, build_quality_dataset, verify_image_label_quality
-from .head import OBB26Quality
-from .loss import DEFAULT_QUALITY_GAIN, OBBQualityLoss
+from .data import (
+    DefectOBBDataset,
+    QualityOBBDataset,
+    build_defect_dataset,
+    build_quality_dataset,
+    verify_image_label_extra,
+)
+from .head import OBB26Defect, OBB26Quality
+from .loss import DEFAULT_DEFECT_GAIN, DEFAULT_QUALITY_GAIN, OBBDefectLoss, OBBQualityLoss
+from .defect import (
+    OBBDefectModel,
+    OBBDefectPredictor,
+    OBBDefectTrainer,
+    OBBDefectValidator,
+    YOLODefect,
+)
 from .model import (
     OBBQualityModel,
     OBBQualityPredictor,
@@ -22,36 +35,48 @@ from .model import (
 )
 
 __all__ = [
+    "DEFAULT_DEFECT_GAIN",
     "DEFAULT_QUALITY_GAIN",
+    "OBB26Defect",
     "OBB26Quality",
+    "OBBDefectLoss",
     "OBBQualityLoss",
+    "OBBDefectModel",
+    "OBBDefectPredictor",
+    "OBBDefectTrainer",
+    "OBBDefectValidator",
     "OBBQualityModel",
     "OBBQualityPredictor",
     "OBBQualityTrainer",
     "OBBQualityValidator",
+    "DefectOBBDataset",
     "QualityOBBDataset",
+    "build_defect_dataset",
+    "YOLODefect",
     "YOLOQuality",
     "build_quality_dataset",
     "model_cfg",
     "register",
-    "verify_image_label_quality",
+    "verify_image_label_extra",
 ]
 
 
-def register(default: float = DEFAULT_QUALITY_GAIN) -> None:
-    """Register `quality` as a trainable hyperparameter so `train(quality=...)` sets the quality loss gain.
+def register(quality: float = DEFAULT_QUALITY_GAIN, defect: float = DEFAULT_DEFECT_GAIN) -> None:
+    """Register the extra loss gains so `train(quality=...)` / `train(defect=...)` set them.
 
     Ultralytics validates training arguments against its default config, so a new gain has to be declared there
     before it can be passed. Calling this more than once is harmless.
 
     Args:
-        default (float): Default quality loss gain.
+        quality (float): Default gain for the quality variant's loss term.
+        defect (float): Default gain for the defect variant's loss term.
     """
     from ultralytics import cfg as ultralytics_cfg
     from ultralytics.utils import DEFAULT_CFG, DEFAULT_CFG_DICT
 
-    DEFAULT_CFG_DICT.setdefault("quality", default)
-    if not hasattr(DEFAULT_CFG, "quality"):
-        setattr(DEFAULT_CFG, "quality", default)
-    if "quality" not in ultralytics_cfg.CFG_FLOAT_KEYS:
-        ultralytics_cfg.CFG_FLOAT_KEYS = frozenset(ultralytics_cfg.CFG_FLOAT_KEYS | {"quality"})
+    for key, value in (("quality", quality), ("defect", defect)):
+        DEFAULT_CFG_DICT.setdefault(key, value)
+        if not hasattr(DEFAULT_CFG, key):
+            setattr(DEFAULT_CFG, key, value)
+        if key not in ultralytics_cfg.CFG_FLOAT_KEYS:
+            ultralytics_cfg.CFG_FLOAT_KEYS = frozenset(ultralytics_cfg.CFG_FLOAT_KEYS | {key})
