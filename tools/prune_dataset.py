@@ -11,12 +11,18 @@ This removes those samples. It does not reimplement the checks: it calls the sam
 verification function the loader uses, so what it removes is exactly what the
 loader would have ignored.
 
+It handles both layouts in this repo: the generators' `images/<split>/` tree,
+and the flat `images/` + `labels/` tree that `tools/label_defect_gui.py` writes
+(where the splits are `train.txt` / `val.txt` lists). In the flat case the list
+files are rewritten so they never point at a removed image.
+
 Examples:
     python tools/prune_dataset.py --root datasets/obb-defect --format defect
-    python tools/prune_dataset.py --root datasets/obb-defect --format defect --apply
+    python tools/prune_dataset.py --root labeled_dataset --format defect --apply
 """
 
 import argparse
+import os
 from pathlib import Path
 
 from ultralytics.data.utils import img2label_paths
@@ -37,9 +43,18 @@ def checker_for(fmt: str, data: dict):
     return make_check_defect(len(names))
 
 
-def scan(root: Path, split: str, num_cls: int, check_extra):
-    """Return (kept, rejected) samples for one split, rejected as (image, label, reason)."""
-    img_dir = root / "images" / split
+def image_dirs(root: Path, splits: list[str]) -> list[tuple[str, Path]]:
+    """Return the (name, directory) pairs to scan, for either dataset layout."""
+    split_dirs = [(s, root / "images" / s) for s in splits if (root / "images" / s).is_dir()]
+    if split_dirs:
+        return split_dirs
+    if (root / "images").is_dir():
+        return [("images", root / "images")]  # flat layout, as written by label_defect_gui.py
+    raise SystemExit(f"no images/ directory under {root}")
+
+
+def scan(img_dir: Path, num_cls: int, check_extra):
+    """Return (kept, rejected) samples for one directory, rejected as (image, label, reason)."""
     images = sorted(p for p in img_dir.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
     labels = img2label_paths([str(p) for p in images])
     kept, rejected = 0, []
@@ -55,6 +70,32 @@ def scan(root: Path, split: str, num_cls: int, check_extra):
     return kept, rejected
 
 
+def find_orphan_labels(root: Path, splits: list[str]) -> list[Path]:
+    """Return label files that have no matching image, in either layout."""
+    orphans = []
+    for lbl_dir in [root / "labels" / s for s in splits] + [root / "labels"]:
+        if not lbl_dir.is_dir():
+            continue
+        img_dir = Path(str(lbl_dir).replace(f"{os.sep}labels", f"{os.sep}images", 1))
+        if not img_dir.is_dir():
+            continue
+        stems = {p.stem for p in img_dir.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES}
+        orphans += [p for p in sorted(lbl_dir.glob("*.txt")) if p.stem not in stems]
+    return orphans
+
+
+def rewrite_split_lists(root: Path, removed: set[str]) -> list[tuple[Path, int, int]]:
+    """Drop removed images from any train.txt / val.txt list files, so none dangle."""
+    rewritten = []
+    for list_file in sorted(root.glob("*.txt")):
+        lines = [ln for ln in list_file.read_text().splitlines() if ln.strip()]
+        keep = [ln for ln in lines if Path(ln).name not in removed]
+        if len(keep) != len(lines):
+            list_file.write_text("\n".join(keep) + "\n" if keep else "")
+            rewritten.append((list_file, len(lines) - len(keep), len(keep)))
+    return rewritten
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", default="datasets/obb-defect")
@@ -68,26 +109,40 @@ def main():
     check_extra = checker_for(a.format, data)
     num_cls = len(data["names"])
 
-    total_removed = 0
-    for split in a.splits:
-        if not (root / "images" / split).is_dir():
-            continue
-        kept, rejected = scan(root, split, num_cls, check_extra)
-        print(f"\n{split}: {kept} usable, {len(rejected)} to remove")
+    total_removed, removed_names = 0, set()
+    for name, img_dir in image_dirs(root, a.splits):
+        kept, rejected = scan(img_dir, num_cls, check_extra)
+        print(f"\n{name}: {kept} usable, {len(rejected)} to remove")
         for img, _, reason in rejected:
             print(f"    {img.name}  ({reason})")
         if a.apply:
             for img, lbl, _ in rejected:
                 img.unlink(missing_ok=True)
                 lbl.unlink(missing_ok=True)
-            for cache in (root / "labels").glob("*.cache"):
-                cache.unlink()  # the cache is keyed on the file list, which just changed
+                removed_names.add(img.name)
         total_removed += len(rejected)
 
+    orphans = find_orphan_labels(root, a.splits)
+    if orphans:
+        print(f"\norphan labels with no image: {len(orphans)}")
+        for lbl in orphans:
+            print(f"    {lbl.name}")
+        if a.apply:
+            for lbl in orphans:
+                lbl.unlink(missing_ok=True)
+
     if not a.apply:
-        print(f"\n{total_removed} sample(s) would be removed. Re-run with --apply to delete them.")
-    else:
-        print(f"\nremoved {total_removed} sample(s), and cleared the label caches")
+        print(f"\n{total_removed + len(orphans)} file(s) would be removed. Re-run with --apply to delete them.")
+        return
+
+    for cache in root.rglob("*.cache"):
+        cache.unlink()  # the label cache is keyed on the file list, which just changed
+    rewritten = rewrite_split_lists(root, removed_names)
+    print(f"\nremoved {total_removed} sample(s) and {len(orphans)} orphan label(s); cleared the label caches")
+    for path, dropped, left in rewritten:
+        print(f"    {path.name}: dropped {dropped} entr{'y' if dropped == 1 else 'ies'}, {left} left")
+        if not left:
+            print(f"    WARNING: {path.name} is now empty -- re-run tools/split_labeled_dataset.py to re-split")
 
 
 if __name__ == "__main__":
