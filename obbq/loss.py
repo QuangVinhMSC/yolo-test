@@ -23,6 +23,9 @@ from ultralytics.utils.tal import make_anchors
 
 DEFAULT_QUALITY_GAIN = 1.0
 DEFAULT_DEFECT_GAIN = 1.0
+DEFAULT_DEFECT_FOCAL_GAMMA = 0.0  # 0 disables focal weighting, reproducing plain one-hot BCE
+DEFAULT_DEFECT_FOCAL_ALPHA = 0.25
+DEFAULT_DEFECT_CLASS_WEIGHTS = ""  # comma-separated per-class weights, in defect_names order; "" disables
 
 
 class OBBExtraLoss(v8OBBLoss):
@@ -230,14 +233,47 @@ class OBBDefectLoss(OBBExtraLoss):
     gain_key = "defect"
     default_gain = DEFAULT_DEFECT_GAIN
 
+    def __init__(self, model: torch.nn.Module, tal_topk: int = 10, tal_topk2: int | None = None):
+        """Initialize the loss, plus the optional focal-loss weighting and per-class weights for the defect term.
+
+        `defect_focal_gamma` / `defect_focal_alpha` are read from the same hyperparameter namespace as the loss
+        gains. Gamma of 0 (the default) disables focal weighting entirely, reproducing the plain one-hot BCE.
+        `defect_class_weights` is a comma-separated string of per-class weights in `defect_names` order (e.g.
+        "0.38,3.56,9.53" to counter a 25:3:1 class imbalance); an empty string disables it.
+        """
+        super().__init__(model, tal_topk=tal_topk, tal_topk2=tal_topk2)
+        self.focal_gamma = getattr(self.hyp, "defect_focal_gamma", DEFAULT_DEFECT_FOCAL_GAMMA)
+        self.focal_alpha = getattr(self.hyp, "defect_focal_alpha", DEFAULT_DEFECT_FOCAL_ALPHA)
+        weights_str = getattr(self.hyp, "defect_class_weights", DEFAULT_DEFECT_CLASS_WEIGHTS)
+        if weights_str:
+            weights = [float(w) for w in weights_str.split(",")]
+            self.defect_class_weights = torch.tensor(weights, device=self.device).view(1, 1, -1)
+        else:
+            self.defect_class_weights = None
+
     @staticmethod
     def split_cls(cls: torch.Tensor, default: float = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
         """Split `cls`, defaulting a missing defect column to class 0 rather than to 1."""
         return OBBExtraLoss.split_cls(cls, default=default)
 
     def calculate_extra_loss(self, pred_extra, gt_extra, target_gt_idx, fg_mask, weight, target_scores_sum):
-        """One-hot BCE over the defect classes of each positive anchor."""
+        """One-hot BCE over the defect classes of each positive anchor, optionally focal-weighted.
+
+        Every positive anchor's target is one-hot over the defect classes, so a class that is rarely the
+        ground-truth (e.g. a rare defect) is a rare *positive* on its own channel and a common *negative* on every
+        other object's channel -- the same per-channel imbalance focal loss was designed for, just without the
+        foreground/background split stock detection losses use it for.
+        """
         target_defect = self.gather_targets(gt_extra, target_gt_idx).long().clamp_(0, pred_extra.shape[-1] - 1)
         one_hot = F.one_hot(target_defect, pred_extra.shape[-1]).to(pred_extra.dtype)  # (bs, h*w, nd)
-        def_loss = self.bce(pred_extra, one_hot).sum(-1)[fg_mask]  # sum over classes, positives only
+        bce = F.binary_cross_entropy_with_logits(pred_extra, one_hot, reduction="none")
+        if self.focal_gamma > 0:
+            pred_prob = pred_extra.sigmoid()
+            p_t = one_hot * pred_prob + (1 - one_hot) * (1 - pred_prob)
+            bce = bce * (1.0 - p_t).pow(self.focal_gamma)
+            alpha_factor = one_hot * self.focal_alpha + (1 - one_hot) * (1 - self.focal_alpha)
+            bce = bce * alpha_factor
+        if self.defect_class_weights is not None:
+            bce = bce * self.defect_class_weights
+        def_loss = bce.sum(-1)[fg_mask]  # sum over classes, positives only
         return (def_loss * weight).sum() / target_scores_sum

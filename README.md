@@ -263,6 +263,30 @@ and `results.csv` gains `metrics/quality_mae` and `metrics/quality_corr`.
 `obbq.model_cfg(scale, variant)` accepts scales `n`, `s`, `m`, `l`, `x` and
 variants `quality`, `defect`.
 
+## Labeling defect classes by hand
+
+`tools/label_defect_gui.py` is a Tkinter GUI for turning a plain two-output OBB
+detector's boxes into defect-labeled training data: it runs the detector, and a
+human only assigns the defect class per box (every box defaults to the first
+class, so only the exceptions need a click).
+
+```bash
+python tools/label_defect_gui.py --dataset dataset --weights best.pt \
+    --out labeled_dataset --defects ok,uhuh,nah
+```
+
+* Left-click a box to cycle its defect class; `1`/`2`/`3` set it directly on
+  the hovered box. Right-click (or `Delete`) toggles a box out of the label
+  (for false-positive detections).
+* Saving writes the rotated image and its `obbq` defect-format label
+  (`cls x1 y1 x2 y2 x3 y3 x4 y4 defect_class`) to `--out`, plus a `data.yaml`
+  naming the object and defect classes — ready for `train_defect.py`.
+* The file list on the left checks off images that already have a saved
+  label, and the app resumes from the first unlabeled one on restart.
+* Images are rotated 180 degrees before both inference and display/saving,
+  matching how this particular capture rig's frames need to be oriented for
+  the detector.
+
 ## Trial result: quality
 
 100 epochs on the synthetic set from `tools/make_dataset.py` (240 train / 48 val

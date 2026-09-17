@@ -21,6 +21,27 @@ def main():
     p.add_argument("--device", default="cpu")
     p.add_argument("--workers", type=int, default=2)
     p.add_argument("--defect", type=float, default=obbq.DEFAULT_DEFECT_GAIN, help="defect loss gain")
+    p.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=0.0,
+        dest="defect_focal_gamma",
+        help="focal-loss gamma for the defect term; 0 (default) disables focal weighting",
+    )
+    p.add_argument(
+        "--focal-alpha",
+        type=float,
+        default=0.25,
+        dest="defect_focal_alpha",
+        help="focal-loss alpha for the defect term's positive class (only used when --focal-gamma > 0)",
+    )
+    p.add_argument(
+        "--class-weights",
+        default="",
+        dest="defect_class_weights",
+        help="comma-separated per-defect-class weights, in defect_names order (e.g. '0.38,3.56,9.53'); "
+        "empty (default) disables per-class weighting",
+    )
     p.add_argument("--name", default="obb-defect")
     a = p.parse_args()
 
@@ -34,6 +55,9 @@ def main():
         device=a.device,
         workers=a.workers,
         defect=a.defect,
+        defect_focal_gamma=a.defect_focal_gamma,
+        defect_focal_alpha=a.defect_focal_alpha,
+        defect_class_weights=a.defect_class_weights,
         name=a.name,
     )
 
