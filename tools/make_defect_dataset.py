@@ -71,9 +71,16 @@ def make_sample(rng, size=320):
         h = w * (rng.uniform(0.7, 1.0) if cls == 0 else rng.uniform(0.30, 0.45))
         angle = rng.uniform(0, math.pi)
 
+        # A rotated box reaches further than w/2 from its centre, so derive the margin from the
+        # rotated extent -- otherwise a corner lands outside the image and ultralytics rejects the
+        # whole sample as corrupt, silently costing the image its boxes and classes.
+        ca, sa = abs(math.cos(angle)), abs(math.sin(angle))
+        ext_x, ext_y = (w * ca + h * sa) / 2, (w * sa + h * ca) / 2
+
         # Keep objects apart, so one object's fill never hides another's defect mark
         for _attempt in range(30):
-            cx, cy = rng.uniform(w / 2, size - w / 2), rng.uniform(w / 2, size - w / 2)
+            cx = rng.uniform(ext_x, size - ext_x)
+            cy = rng.uniform(ext_y, size - ext_y)
             if all(math.hypot(cx - px, cy - py) > (w + pw) / 2 for px, py, pw in placed):
                 break
         else:
