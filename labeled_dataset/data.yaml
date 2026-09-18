@@ -1,0 +1,22 @@
+path: D:\VINHDQ-PROJECT\yolo-3rd-output\defect-class\labeled_dataset
+train: train.txt
+val: val.txt
+names:
+  0: '0'
+  1: '1'
+  2: '2'
+  3: '3'
+  4: '4'
+  5: '5'
+  6: '6'
+  7: '7'
+  8: '8'
+  9: '9'
+  10: ':'
+  11: 'M'
+  12: '_'
+  13: 'line2'
+defect_names:
+  0: ok
+  1: uhuh
+  2: nah
